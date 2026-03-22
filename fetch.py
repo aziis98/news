@@ -2,7 +2,7 @@
 fetch.py — runtime for sites.py checks.
 
 Public API (imported by sites.py):
-    check       — decorator for function and class checks
+    News        — class that registers and runs checks
     Notify      — return value that triggers a GitHub issue
     fetch()     — HTTP fetch returning a Response
     semver      — semver.matches(version, spec)
@@ -12,12 +12,17 @@ Public API (imported by sites.py):
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import sys
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import requests
+from bs4 import BeautifulSoup
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from pydantic import BaseModel, create_model
@@ -29,6 +34,80 @@ from pydantic import BaseModel, create_model
 class Notify:
     title: str
     body: str = ""
+    image: str | None = None
+
+
+# ─── HTML ────────────────────────────────────────────────────────────────────
+
+
+class HTMLMetadata:
+    """Extracted metadata from an HTML page."""
+
+    def __init__(
+        self, title: str | None = None, description: str | None = None, image: str | None = None
+    ) -> None:
+        self.title = title
+        self.description = description
+        self.image = image
+
+
+class HTML:
+    """Parsed HTML document with metadata extraction."""
+
+    def __init__(self, content: str, url: str | None = None) -> None:
+        self._content = content
+        self._url = url
+        self._soup = BeautifulSoup(content, "html.parser")
+
+    @property
+    def document(self) -> BeautifulSoup:
+        """Return the parsed DOM."""
+        return self._soup
+
+    @property
+    def metadata(self) -> HTMLMetadata:
+        """Extract metadata from og/twitter tags with fallbacks."""
+        # Open Graph tags (primary)
+        og_title = self._soup.find("meta", property="og:title")
+        og_description = self._soup.find("meta", property="og:description")
+        og_image = self._soup.find("meta", property="og:image")
+
+        # Twitter tags (fallbacks)
+        twitter_title = self._soup.find("meta", attrs={"name": "twitter:title"})
+        twitter_description = self._soup.find("meta", attrs={"name": "twitter:description"})
+        twitter_image = self._soup.find("meta", attrs={"name": "twitter:image"})
+
+        # HTML fallbacks
+        title_tag = self._soup.find("title")
+        h1_tag = self._soup.find("h1")
+        meta_description = self._soup.find("meta", attrs={"name": "description"})
+
+        # Extract with fallbacks
+        title = None
+        if og_title and og_title.get("content"):
+            title = str(og_title["content"])
+        elif twitter_title and twitter_title.get("content"):
+            title = str(twitter_title["content"])
+        elif title_tag and title_tag.string:
+            title = title_tag.string
+        elif h1_tag and h1_tag.string:
+            title = h1_tag.string
+
+        description = None
+        if og_description and og_description.get("content"):
+            description = str(og_description["content"])
+        elif twitter_description and twitter_description.get("content"):
+            description = str(twitter_description["content"])
+        elif meta_description and meta_description.get("content"):
+            description = str(meta_description["content"])
+
+        image = None
+        if og_image and og_image.get("content"):
+            image = str(og_image["content"])
+        elif twitter_image and twitter_image.get("content"):
+            image = str(twitter_image["content"])
+
+        return HTMLMetadata(title=title, description=description, image=image)
 
 
 # ─── Response ─────────────────────────────────────────────────────────────────
@@ -52,6 +131,10 @@ class Response:
 
     def binary(self) -> bytes:
         return self._resp.content
+
+    def html(self) -> HTML:
+        """Parse response as HTML with metadata extraction."""
+        return HTML(self._resp.text, self._resp.url)
 
 
 def _dict_to_pydantic_model(data: dict[str, Any]) -> type[BaseModel]:
@@ -170,7 +253,7 @@ class _ClassCheck(_CheckEntry):
                 setattr(self._instance, k, data[k])
 
 
-# ─── check decorator ──────────────────────────────────────────────────────────
+# ─── News class ───────────────────────────────────────────────────────────────
 
 
 def _parse_interval(s: str) -> int:
@@ -180,39 +263,205 @@ def _parse_interval(s: str) -> int:
     return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
-def check(every: str, *, id: str | None = None) -> Callable:
-    """
-    Universal decorator — works on both functions and classes.
+class News:
+    """Check registry and runner."""
 
-        @check(every="3h")
-        def my_fn_check():
-            ...
-            return Notify(...) or None
+    def __init__(self) -> None:
+        self.registry: list[_CheckEntry] = []
 
-        @check(every="15m", id="custom_check_id")
-        class MyClassCheck:
-            some_state: str = None
-            def check(self):
-                ...
+    def check(self, every: str, *, id: str | None = None) -> Callable:
+        """Decorator for function and class checks.
+
+        Usage:
+            news = News()
+
+            @news.check(every="3h")
+            def my_check():
                 return Notify(...) or None
 
-    Annotated class attributes are automatically persisted to state.json.
-    Pass id to explicitly set the check's identifier (defaults to function/class name).
-    """
-    interval = _parse_interval(every)
+            @news.check(every="15m", id="custom_id")
+            class MyCheck:
+                state: str = None
+                def check(self):
+                    return Notify(...) or None
+        """
+        interval = _parse_interval(every)
 
-    def decorator(target: type | Callable) -> type | Callable:
-        check_id = id or (target.__name__ if isinstance(target, type) else target.__name__)
+        def decorator(target: type | Callable) -> type | Callable:
+            check_id = id or (target.__name__ if isinstance(target, type) else target.__name__)
 
-        # Check for ID collisions
-        if any(entry.id == check_id for entry in registry):
-            print(f"⚠️  Collision detected: check id '{check_id}' already registered!", file=sys.stderr)
+            # Check for ID collisions
+            if any(entry.id == check_id for entry in self.registry):
+                print(f"⚠️  Collision detected: check id '{check_id}' already registered!", file=sys.stderr)
 
-        if isinstance(target, type):
-            entry = _ClassCheck(target(), interval, check_id)
-        else:
-            entry = _FunctionCheck(target, interval, check_id)
-        registry.append(entry)
-        return target  # preserve original so the name / repr stay intact
+            if isinstance(target, type):
+                entry = _ClassCheck(target(), interval, check_id)
+            else:
+                entry = _FunctionCheck(target, interval, check_id)
+            self.registry.append(entry)
+            return target  # preserve original so the name / repr stay intact
 
-    return decorator
+        return decorator
+
+    def _load_state(self, state_file: Path) -> dict:
+        if state_file.exists():
+            try:
+                return json.loads(state_file.read_text())
+            except json.JSONDecodeError as e:
+                print(f"[warn] state.json malformed ({e}), starting fresh.", file=sys.stderr)
+        return {}
+
+    def _save_state(self, state_file: Path, state: dict) -> None:
+        state_file.write_text(json.dumps(state, indent=2) + "\n")
+
+    def _gh_headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN', '')}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _open_github_issue(self, n: Notify) -> None:
+        token = os.environ.get("GITHUB_TOKEN", "")
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+
+        if not token or not repo:
+            print("  ⚠  GITHUB_TOKEN / GITHUB_REPOSITORY not set — printing locally.")
+            print(f"  ╔ {n.title}")
+            for line in n.body.splitlines():
+                print(f"  ║ {line}")
+            print("  ╚─")
+            return
+
+        headers = self._gh_headers()
+
+        # Dedup: skip if an open issue with this exact title already exists
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/issues",
+            headers=headers,
+            params={"state": "open", "per_page": 100},
+            timeout=10,
+        )
+        if r.ok:
+            if any(i["title"] == n.title for i in r.json()):
+                print("  ↩  Issue already open — skipping.")
+                return
+
+        r = requests.post(
+            f"https://api.github.com/repos/{repo}/issues",
+            headers=headers,
+            json={"title": n.title, "body": n.body},
+            timeout=10,
+        )
+        r.raise_for_status()
+        print(f"  ✅ Opened issue #{r.json()['number']}: {r.json()['html_url']}")
+
+    def run(self, state_file: Path | str = "state.json") -> None:
+        """Run all registered checks and open GitHub issues for notifications."""
+        state_file = Path(state_file)
+        now = int(time.time())
+        state = self._load_state(state_file)
+        ran = skipped = errored = 0
+
+        for entry in self.registry:
+            s = state.setdefault(entry.id, {})
+            last_run = s.get("_last_run", 0)
+            due_in = (last_run + entry.interval) - now
+
+            if due_in > 0:
+                h, rem = divmod(due_in, 3600)
+                m, sec = divmod(rem, 60)
+                eta = f"{h}h {m}m {sec}s" if h else (f"{m}m {sec}s" if m else f"{sec}s")
+                print(f"⏭  [{entry.id}]  next run in {eta}")
+                skipped += 1
+                continue
+
+            print(f"🔍 [{entry.id}]  running …")
+            ran += 1
+
+            # Restore persisted state into the check instance (class checks only)
+            entry.load_state(s.get("_data", {}))
+
+            try:
+                n = entry.run()
+
+                # Flush updated instance state back into the state dict
+                s["_data"] = entry.dump_state()
+                s["_last_run"] = now
+
+                if isinstance(n, Notify):
+                    print(f"  🔔 {n.title}")
+                    self._open_github_issue(n)
+                elif n not in (None, False):
+                    print(f"  ⚠  unexpected return value: {n!r}", file=sys.stderr)
+                else:
+                    print("  ✓  no change.")
+
+            except Exception as exc:
+                print(f"  ❌ {exc}", file=sys.stderr)
+                errored += 1
+
+        self._save_state(state_file, state)
+        print(f"\nDone — ran {ran}, skipped {skipped}, errored {errored}.")
+        if errored:
+            sys.exit(1)
+
+
+# ─── runner ───────────────────────────────────────────────────────────────────
+
+
+def _load_state(state_file: Path) -> dict:
+    if state_file.exists():
+        try:
+            return json.loads(state_file.read_text())
+        except json.JSONDecodeError as e:
+            print(f"[warn] state.json malformed ({e}), starting fresh.", file=sys.stderr)
+    return {}
+
+
+def _save_state(state_file: Path, state: dict) -> None:
+    state_file.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def _gh_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN', '')}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _open_github_issue(n: Notify) -> None:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+
+    if not token or not repo:
+        print("  ⚠  GITHUB_TOKEN / GITHUB_REPOSITORY not set — printing locally.")
+        print(f"  ╔ {n.title}")
+        for line in n.body.splitlines():
+            print(f"  ║ {line}")
+        print("  ╚─")
+        return
+
+    headers = _gh_headers()
+
+    # Dedup: skip if an open issue with this exact title already exists
+    r = requests.get(
+        "https://api.github.com/repos/{repo}/issues",
+        headers=headers,
+        params={"state": "open", "per_page": 100},
+        timeout=10,
+    )
+    if r.ok:
+        if any(i["title"] == n.title for i in r.json()):
+            print("  ↩  Issue already open — skipping.")
+            return
+
+    r = requests.post(
+        f"https://api.github.com/repos/{repo}/issues",
+        headers=headers,
+        json={"title": n.title, "body": n.body},
+        timeout=10,
+    )
+    r.raise_for_status()
+    print(f"  ✅ Opened issue #{r.json()['number']}: {r.json()['html_url']}")

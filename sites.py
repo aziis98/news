@@ -1,13 +1,27 @@
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests", "packaging", "pydantic", "beautifulsoup4"]
+# ///
+"""
+sites.py — check definitions and runner
+
+Usage:
+    uv run sites.py
+"""
+
 from pydantic import BaseModel
 
-from fetch import Notify, blob_hash, check, fetch, semver
+from fetch import News, Notify, blob_hash, fetch, semver
+
+news = News()
 
 
 class GnomePackage(BaseModel):
     pkgver: str
 
 
-@check(every="3h")
+@news.check(every="3h")
 def when_gnome_50():
     response = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
     pkg = GnomePackage.model_validate(response.__dict__)
@@ -18,7 +32,7 @@ def when_gnome_50():
         )
 
 
-@check(every="15m")
+@news.check(every="15m")
 class IstGeomExercises:
     url = "https://people.dm.unipi.it/martelli/didattica/matematica/2026/Esercizi_istituzioni_2026.pdf"
 
@@ -34,3 +48,7 @@ class IstGeomExercises:
                 body=f"New version available at {self.url}",
             )
         self.prev_hash = h
+
+
+if __name__ == "__main__":
+    news.run()
