@@ -1,115 +1,57 @@
 # News
 
-A periodic check system that monitors external resources and creates GitHub issues when conditions are met.
+Periodic check system that monitors external resources and opens GitHub issues when conditions are met.
 
-## Overview
+## What is this?
 
-**News** is a simple framework for running periodic checks on external resources (APIs, websites, PDFs, etc.) and automatically opening GitHub issues when conditions are triggered. It's designed to be:
+**News** lets you define periodic checks that monitor APIs, websites, PDFs, or any external resource. When a check detects a change or meets a condition, it automatically opens a GitHub issue. Perfect for tracking software releases, document updates, configuration changes, or any other event you want to be notified about.
 
-- **Lightweight** — Minimal dependencies (requests, packaging, pydantic)
-- **Flexible** — Supports both function-based and class-based checks
-- **Stateful** — Persists check state to `state.json`
-- **Type-safe** — Uses Pydantic for automatic validation of JSON responses
+State is automatically persisted across runs, so class-based checks can maintain memory of what they've seen before.
 
-## Quick Start
+## Usage
 
-### Define Checks
-
-Create checks using the `@check` decorator:
+Define checks with the `@check` decorator:
 
 ```python
-from fetch import check, Notify, fetch, semver
+from fetch import check, Notify, fetch, semver, blob_hash
 
 @check(every="3h")
 def when_gnome_50():
-    """Check if GNOME 50 is available in Arch Linux."""
     pkg = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
     if semver.matches(pkg.pkgver, ">=50"):
-        return Notify(
-            title=f"🎉 GNOME {pkg.pkgver} has landed",
-            body="Run `sudo pacman -Syu` to upgrade."
-        )
+        return Notify(title=f"🎉 GNOME {pkg.pkgver}", body="Upgrade available")
 
-@check(every="15m", id="geometry_exercises")
-class CheckPdfUpdates:
-    """Class-based check with persistent state."""
-    url = "https://example.com/document.pdf"
+@check(every="15m", id="pdf_check")
+class CheckUpdates:
     prev_hash: str | None = None
 
     def check(self):
-        pdf = fetch(self.url).binary()
-        h = blob_hash(pdf)
+        h = blob_hash(fetch(self.url).binary())
         if self.prev_hash and h != self.prev_hash:
             self.prev_hash = h
-            return Notify(
-                title="📄 Document updated",
-                body=f"New version: {self.url}"
-            )
+            return Notify(title="📄 Updated", body="New version")
         self.prev_hash = h
 ```
 
-### Run Checks
+Run with:
 
 ```bash
 uv run notifier.py
 ```
 
-## Features
+## Utilities (fetch.py)
 
-### Intervals
+- **`check(every, *, id)`** — Decorator for function/class checks. Intervals: `15s`, `30m`, `3h`, `1d`. Optional `id` for explicit check naming.
 
-Supported interval formats: `15s`, `30m`, `3h`, `1d`
+- **`Notify(title, body)`** — Return value that triggers a GitHub issue.
 
-### Check Types
+- **`fetch(url)`** — HTTP request with auto HTTPS prefix. Returns `Response` object.
+    - `.json()` — Parse body as Pydantic-validated JSON
+    - `.text()` — Get response as string
+    - `.binary()` — Get response as bytes
 
-**Function checks:** Stateless, simplest form
+- **`semver.matches(version, spec)`** — Check version against PEP 440 specifier (e.g., `">=50"`, `"==2.*"`)
 
-```python
-@check(every="1h")
-def my_check():
-    return Notify(...) if condition else None
-```
+- **`blob_hash(data, algo)`** — SHA256 (default) hex digest of bytes or string
 
-**Class checks:** Maintain state across runs (annotated fields are persisted)
-
-```python
-@check(every="1h", id="my_check")
-class MyCheck:
-    counter: int = 0
-
-    def check(self):
-        self.counter += 1
-        if self.counter >= 5:
-            return Notify(...)
-```
-
-### Collision Detection
-
-If multiple checks share the same ID, a warning is printed:
-
-```
-⚠️  Collision detected: check id 'my_check' already registered!
-```
-
-## State Management
-
-Check state is automatically saved/restored from `state.json`:
-
-- Last run timestamp (`_last_run`)
-- Persisted data from class attributes (`_data`)
-
-## Requirements
-
-- Python 3.11+
-- requests
-- packaging
-- pydantic
-
-## Environment Variables
-
-When running with GitHub Actions integration:
-
-- `GITHUB_TOKEN` — Token with `issues:write` permission
-- `GITHUB_REPOSITORY` — Repository for opening issues (e.g., `owner/repo`)
-
-If not set, notifications are printed locally instead.
+- **`registry`** — List of all registered check entries

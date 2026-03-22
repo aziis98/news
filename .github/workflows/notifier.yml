@@ -2,8 +2,8 @@ name: Site notifier
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # fires every 15 min; each check has its own interval
-  workflow_dispatch:           # also runnable manually from the Actions tab
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   notify:
@@ -15,9 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Rolling cache key: always restore the latest snapshot (via restore-keys
-      # prefix fallback), always write a new entry keyed by run-id so the next
-      # run can pick it up. This is how state.json persists across cron runs.
       - name: Restore state cache
         uses: actions/cache@v4
         with:
