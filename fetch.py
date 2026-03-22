@@ -13,41 +13,39 @@ from __future__ import annotations
 
 import hashlib
 import re
-import types
+import sys
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import requests
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
-
+from pydantic import BaseModel, create_model
 
 # ─── Notify ───────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class Notify:
     title: str
-    body:  str = ""
+    body: str = ""
 
 
 # ─── Response ─────────────────────────────────────────────────────────────────
-
-def _deep_namespace(obj: object) -> object:
-    """Recursively convert dicts to SimpleNamespace for dot-access."""
-    if isinstance(obj, dict):
-        return types.SimpleNamespace(**{k: _deep_namespace(v) for k, v in obj.items()})
-    if isinstance(obj, list):
-        return [_deep_namespace(i) for i in obj]
-    return obj
 
 
 class Response:
     def __init__(self, resp: requests.Response) -> None:
         self._resp = resp
 
-    def json(self) -> types.SimpleNamespace:
-        """Parse JSON body; nested dicts become dot-accessible namespaces."""
-        return _deep_namespace(self._resp.json())
+    def json(self) -> BaseModel:
+        """Parse JSON body; returns validated Pydantic model."""
+        data = self._resp.json()
+        # Create a dynamic Pydantic model from the JSON structure
+        if isinstance(data, dict):
+            model = _dict_to_pydantic_model(data)
+            return model(**data)
+        raise ValueError(f"Expected dict from JSON, got {type(data)}")
 
     def text(self) -> str:
         return self._resp.text
@@ -56,7 +54,23 @@ class Response:
         return self._resp.content
 
 
+def _dict_to_pydantic_model(data: dict[str, Any]) -> type[BaseModel]:
+    """Convert a dict to a Pydantic model class."""
+    fields = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            fields[key] = (_dict_to_pydantic_model(value), ...)
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            fields[key] = (list, ...)
+        elif value is None:
+            fields[key] = (Any, None)
+        else:
+            fields[key] = (type(value), ...)
+    return create_model("DynamicModel", **fields)  # type: ignore[return-value]
+
+
 # ─── fetch() ──────────────────────────────────────────────────────────────────
+
 
 def fetch(url: str, *, method: str = "GET", **kwargs) -> Response:
     """HTTP fetch.  Prepends https:// when no scheme is present."""
@@ -68,6 +82,7 @@ def fetch(url: str, *, method: str = "GET", **kwargs) -> Response:
 
 
 # ─── semver ───────────────────────────────────────────────────────────────────
+
 
 class _Semver:
     def matches(self, version: str, spec: str) -> bool:
@@ -87,10 +102,16 @@ semver = _Semver()
 
 # ─── blob_hash() ──────────────────────────────────────────────────────────────
 
+
 def blob_hash(data: bytes | str, algo: str = "sha256") -> str:
     """Return a hex digest of *data*."""
+    if isinstance(data, bytes):
+        data_bytes = data
+    else:
+        assert isinstance(data, str)
+        data_bytes = data.encode()
     h = hashlib.new(algo)
-    h.update(data if isinstance(data, bytes) else data.encode())
+    h.update(data_bytes)
     return h.hexdigest()
 
 
@@ -101,7 +122,8 @@ registry: list[_CheckEntry] = []
 
 class _CheckEntry:
     """Internal base for a registered check."""
-    id:       str
+
+    id: str
     interval: int  # seconds
 
     def run(self) -> Notify | None:
@@ -115,19 +137,19 @@ class _CheckEntry:
 
 
 class _FunctionCheck(_CheckEntry):
-    def __init__(self, fn: Callable, interval: int) -> None:
-        self.id       = fn.__name__
+    def __init__(self, fn: Callable, interval: int, id: str | None = None) -> None:
+        self.id = id or fn.__name__
         self.interval = interval
-        self._fn      = fn
+        self._fn = fn
 
     def run(self) -> Notify | None:
         return self._fn()
 
 
 class _ClassCheck(_CheckEntry):
-    def __init__(self, instance: object, interval: int) -> None:
-        self.id        = type(instance).__name__
-        self.interval  = interval
+    def __init__(self, instance: object, interval: int, id: str | None = None) -> None:
+        self.id = id or type(instance).__name__
+        self.interval = interval
         self._instance = instance
 
     def run(self) -> Notify | None:
@@ -150,6 +172,7 @@ class _ClassCheck(_CheckEntry):
 
 # ─── check decorator ──────────────────────────────────────────────────────────
 
+
 def _parse_interval(s: str) -> int:
     m = re.fullmatch(r"(\d+)([smhd])", s.strip())
     if not m:
@@ -157,7 +180,7 @@ def _parse_interval(s: str) -> int:
     return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
-def check(every: str) -> Callable:
+def check(every: str, *, id: str | None = None) -> Callable:
     """
     Universal decorator — works on both functions and classes.
 
@@ -166,7 +189,7 @@ def check(every: str) -> Callable:
             ...
             return Notify(...) or None
 
-        @check(every="15m")
+        @check(every="15m", id="custom_check_id")
         class MyClassCheck:
             some_state: str = None
             def check(self):
@@ -174,14 +197,21 @@ def check(every: str) -> Callable:
                 return Notify(...) or None
 
     Annotated class attributes are automatically persisted to state.json.
+    Pass id to explicitly set the check's identifier (defaults to function/class name).
     """
     interval = _parse_interval(every)
 
     def decorator(target: type | Callable) -> type | Callable:
+        check_id = id or (target.__name__ if isinstance(target, type) else target.__name__)
+
+        # Check for ID collisions
+        if any(entry.id == check_id for entry in registry):
+            print(f"⚠️  Collision detected: check id '{check_id}' already registered!", file=sys.stderr)
+
         if isinstance(target, type):
-            entry = _ClassCheck(target(), interval)
+            entry = _ClassCheck(target(), interval, check_id)
         else:
-            entry = _FunctionCheck(target, interval)
+            entry = _FunctionCheck(target, interval, check_id)
         registry.append(entry)
         return target  # preserve original so the name / repr stay intact
 

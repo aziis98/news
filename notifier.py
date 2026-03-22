@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests", "packaging"]
+# dependencies = ["requests", "packaging", "pydantic"]
 # ///
 """
 notifier.py — runs all due checks from sites.py and opens GitHub issues
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import requests
 
-import sites                      # registers all checks via @check decorators
+import sites  # registers all checks via @check decorators  # noqa: F401
 from fetch import Notify, registry
 
 STATE_FILE = Path("state.json")
@@ -33,6 +33,7 @@ GITHUB_API = "https://api.github.com"
 
 
 # ─── state ────────────────────────────────────────────────────────────────────
+
 
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -49,22 +50,23 @@ def save_state(state: dict) -> None:
 
 # ─── github ───────────────────────────────────────────────────────────────────
 
+
 def _gh_headers() -> dict:
     return {
-        "Authorization":        f"Bearer {os.environ.get('GITHUB_TOKEN', '')}",
-        "Accept":               "application/vnd.github+json",
+        "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN', '')}",
+        "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
 
-def open_github_issue(notif: Notify) -> None:
+def open_github_issue(n: Notify) -> None:
     token = os.environ.get("GITHUB_TOKEN", "")
-    repo  = os.environ.get("GITHUB_REPOSITORY", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
 
     if not token or not repo:
         print("  ⚠  GITHUB_TOKEN / GITHUB_REPOSITORY not set — printing locally.")
-        print(f"  ╔ {notif.title}")
-        for line in notif.body.splitlines():
+        print(f"  ╔ {n.title}")
+        for line in n.body.splitlines():
             print(f"  ║ {line}")
         print("  ╚─")
         return
@@ -79,14 +81,14 @@ def open_github_issue(notif: Notify) -> None:
         timeout=10,
     )
     if r.ok:
-        if any(i["title"] == notif.title for i in r.json()):
+        if any(i["title"] == n.title for i in r.json()):
             print("  ↩  Issue already open — skipping.")
             return
 
     r = requests.post(
         f"{GITHUB_API}/repos/{repo}/issues",
         headers=headers,
-        json={"title": notif.title, "body": notif.body},
+        json={"title": n.title, "body": n.body},
         timeout=10,
     )
     r.raise_for_status()
@@ -95,15 +97,16 @@ def open_github_issue(notif: Notify) -> None:
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    now   = int(time.time())
+    now = int(time.time())
     state = load_state()
     ran = skipped = errored = 0
 
     for entry in registry:
-        s        = state.setdefault(entry.id, {})
+        s = state.setdefault(entry.id, {})
         last_run = s.get("_last_run", 0)
-        due_in   = (last_run + entry.interval) - now
+        due_in = (last_run + entry.interval) - now
 
         if due_in > 0:
             h, rem = divmod(due_in, 3600)
@@ -117,20 +120,20 @@ def main() -> None:
         ran += 1
 
         # Restore persisted state into the check instance (class checks only)
-        entry.set_state(s.get("_data", {}))
+        entry.load_state(s.get("_data", {}))
 
         try:
-            notif = entry.run()
+            n = entry.run()
 
             # Flush updated instance state back into the state dict
-            s["_data"]     = entry.get_state()
+            s["_data"] = entry.dump_state()
             s["_last_run"] = now
 
-            if isinstance(notif, Notify):
-                print(f"  🔔 {notif.title}")
-                open_github_issue(notif)
-            elif notif not in (None, False):
-                print(f"  ⚠  unexpected return value: {notif!r}", file=sys.stderr)
+            if isinstance(n, Notify):
+                print(f"  🔔 {n.title}")
+                open_github_issue(n)
+            elif n not in (None, False):
+                print(f"  ⚠  unexpected return value: {n!r}", file=sys.stderr)
             else:
                 print("  ✓  no change.")
 

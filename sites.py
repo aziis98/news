@@ -1,9 +1,16 @@
-from fetch import check, Notify, fetch, semver, blob_hash
+from pydantic import BaseModel
+
+from fetch import Notify, blob_hash, check, fetch, semver
+
+
+class GnomePackage(BaseModel):
+    pkgver: str
 
 
 @check(every="3h")
 def when_gnome_50():
-    pkg = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
+    response = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
+    pkg = GnomePackage.model_validate(response.__dict__)
     if semver.matches(pkg.pkgver, ">=50"):
         return Notify(
             title=f"🎉 GNOME {pkg.pkgver} has landed in Arch [extra]",
@@ -15,7 +22,7 @@ def when_gnome_50():
 class IstGeomExercises:
     url = "https://people.dm.unipi.it/martelli/didattica/matematica/2026/Esercizi_istituzioni_2026.pdf"
 
-    prev_hash: str = None
+    prev_hash: str | None = None
 
     def check(self):
         pdf = fetch(self.url).binary()
