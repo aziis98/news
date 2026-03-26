@@ -357,18 +357,23 @@ class News:
         print(f"  ✅ Opened issue #{r.json()['number']}: {r.json()['html_url']}")
 
     def run(self, state_file: Path | str = "state.json") -> None:
-        """Run all registered checks and open GitHub issues for notifications."""
+        """Run all registered checks and open GitHub issues for notifications.
+
+        Args:
+            state_file: Path to the state file for persisting check data.
+        """
         state_file = Path(state_file)
         now = int(time.time())
         state = self._load_state(state_file)
         ran = skipped = errored = 0
+        force = os.environ.get("FORCE_RECHECK", "").lower() in ("1", "true", "yes")
 
         for entry in self.registry:
             s = state.setdefault(entry.id, {})
             last_run = s.get("_last_run", 0)
             due_in = (last_run + entry.interval) - now
 
-            if due_in > 0:
+            if not force and due_in > 0:
                 h, rem = divmod(due_in, 3600)
                 m, sec = divmod(rem, 60)
                 eta = f"{h}h {m}m {sec}s" if h else (f"{m}m {sec}s" if m else f"{sec}s")

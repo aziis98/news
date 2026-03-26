@@ -30,4 +30,5 @@ jobs:
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
+                  FORCE_RECHECK: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
               run: uv run sites.py
