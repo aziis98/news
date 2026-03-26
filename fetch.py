@@ -380,7 +380,10 @@ class News:
             ran += 1
 
             # Restore persisted state into the check instance (class checks only)
-            entry.load_state(s.get("_data", {}))
+            cached_state = s.get("_data", {})
+            if cached_state:
+                print(f"  📦 Restored state: {cached_state}")
+            entry.load_state(cached_state)
 
             try:
                 n = entry.run()
