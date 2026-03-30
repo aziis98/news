@@ -11,6 +11,7 @@ Public API (imported by sites.py):
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -198,6 +199,56 @@ def blob_hash(data: bytes | str, algo: str = "sha256") -> str:
     return h.hexdigest()
 
 
+def pdf_to_text(data: bytes) -> str:
+    """Extract plain text from PDF bytes using PyMuPDF (pymupdf/fitz).
+
+    Raises RuntimeError if PyMuPDF is not available.
+    """
+    # Prefer the modern `pymupdf` import, but fall back to the historical `fitz` name
+    mupdf = None
+    try:
+        import pymupdf as mupdf
+    except Exception:
+        try:
+            import fitz as mupdf
+        except Exception:
+            mupdf = None
+
+    if mupdf is not None:
+        try:
+            doc = mupdf.open(stream=data, filetype="pdf")
+            pages = [str(p.get_text("text")) for p in doc]
+            return "\n\n".join(pages)
+        except Exception:
+            pass
+    raise RuntimeError("PDF text extraction requires PyMuPDF (pymupdf/fitz).")
+
+
+def text_diff(old: str, new: str, context: int = 3) -> str:
+    """Return a markdown-friendly unified diff wrapped in a ```diff block.
+
+    The diff is truncated if extremely large to keep notifications readable.
+    """
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    diff_lines = list(
+        difflib.unified_diff(
+            old_lines, new_lines, fromfile="previous", tofile="current", lineterm="", n=context
+        )
+    )
+    if not diff_lines:
+        return ""
+
+    # Truncate if very large
+    max_lines = 800
+    if len(diff_lines) > max_lines:
+        head = diff_lines[: max_lines // 2]
+        tail = diff_lines[-(max_lines // 2) :]
+        diff_lines = head + ["... (diff truncated) ..."] + tail
+
+    return "```diff\n" + "\n".join(diff_lines) + "\n```"
+
+
 # ─── registry & check entries ─────────────────────────────────────────────────
 
 registry: list[_CheckEntry] = []
@@ -356,17 +407,22 @@ class News:
         r.raise_for_status()
         print(f"  ✅ Opened issue #{r.json()['number']}: {r.json()['html_url']}")
 
-    def run(self, state_file: Path | str = "state.json") -> None:
+    def run(self, state_file: Path | str = "state.json", *, force: bool | None = None) -> None:
         """Run all registered checks and open GitHub issues for notifications.
 
         Args:
             state_file: Path to the state file for persisting check data.
+            force: If True, ignore timer cooldown and run all checks immediately. If None,
+                the `FORCE_RECHECK` environment variable is consulted.
         """
         state_file = Path(state_file)
         now = int(time.time())
         state = self._load_state(state_file)
         ran = skipped = errored = 0
-        force = os.environ.get("FORCE_RECHECK", "").lower() in ("1", "true", "yes")
+        if force is None:
+            force = os.environ.get("FORCE_RECHECK", "").lower() in ("1", "true", "yes")
+        else:
+            force = bool(force)
 
         for entry in self.registry:
             s = state.setdefault(entry.id, {})
@@ -413,63 +469,3 @@ class News:
         print(f"\nDone — ran {ran}, skipped {skipped}, errored {errored}.")
         if errored:
             sys.exit(1)
-
-
-# ─── runner ───────────────────────────────────────────────────────────────────
-
-
-def _load_state(state_file: Path) -> dict:
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text())
-        except json.JSONDecodeError as e:
-            print(f"[warn] state.json malformed ({e}), starting fresh.", file=sys.stderr)
-    return {}
-
-
-def _save_state(state_file: Path, state: dict) -> None:
-    state_file.write_text(json.dumps(state, indent=2) + "\n")
-
-
-def _gh_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN', '')}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def _open_github_issue(n: Notify) -> None:
-    token = os.environ.get("GITHUB_TOKEN", "")
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-
-    if not token or not repo:
-        print("  ⚠  GITHUB_TOKEN / GITHUB_REPOSITORY not set — printing locally.")
-        print(f"  ╔ {n.title}")
-        for line in n.body.splitlines():
-            print(f"  ║ {line}")
-        print("  ╚─")
-        return
-
-    headers = _gh_headers()
-
-    # Dedup: skip if an open issue with this exact title already exists
-    r = requests.get(
-        "https://api.github.com/repos/{repo}/issues",
-        headers=headers,
-        params={"state": "open", "per_page": 100},
-        timeout=10,
-    )
-    if r.ok:
-        if any(i["title"] == n.title for i in r.json()):
-            print("  ↩  Issue already open — skipping.")
-            return
-
-    r = requests.post(
-        f"https://api.github.com/repos/{repo}/issues",
-        headers=headers,
-        json={"title": n.title, "body": n.body},
-        timeout=10,
-    )
-    r.raise_for_status()
-    print(f"  ✅ Opened issue #{r.json()['number']}: {r.json()['html_url']}")

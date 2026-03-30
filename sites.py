@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests", "packaging", "pydantic", "beautifulsoup4"]
+# dependencies = ["requests", "packaging", "pydantic", "beautifulsoup4", "PyMuPDF"]
 # ///
 """
 sites.py — check definitions and runner
@@ -12,7 +12,7 @@ Usage:
 
 from pydantic import BaseModel
 
-from fetch import News, Notify, blob_hash, fetch, semver
+from fetch import News, Notify, fetch, pdf_to_text, semver, text_diff
 
 news = News()
 
@@ -36,18 +36,20 @@ def when_gnome_50():
 class IstGeomExercises:
     url = "https://people.dm.unipi.it/martelli/didattica/matematica/2026/Esercizi_istituzioni_2026.pdf"
 
-    prev_hash: str | None = None
+    prev_text: str | None = None
 
     def check(self):
         pdf = fetch(self.url).binary()
-        h = blob_hash(pdf)
-        if self.prev_hash is not None and h != self.prev_hash:
-            self.prev_hash = h
+        text = pdf_to_text(pdf)
+        if self.prev_text is not None and text != self.prev_text:
+            diff_md = text_diff(self.prev_text, text, context=3)
+            self.prev_text = text
+            body = f"New version available at {self.url}\n\n{diff_md}"
             return Notify(
                 title="📄 Esercizi Istituzioni di Geometria updated",
-                body=f"New version available at {self.url}",
+                body=body,
             )
-        self.prev_hash = h
+        self.prev_text = text
 
 
 @news.check(every="1h")
@@ -116,4 +118,19 @@ class ParameterGolfLeaderboard:
 
 
 if __name__ == "__main__":
-    news.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run registered news checks")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore timer cooldown and run all checks immediately",
+    )
+    parser.add_argument(
+        "--state-file",
+        default="state.json",
+        help="Path to the state file for persisting check data",
+    )
+    args = parser.parse_args()
+
+    news.run(state_file=args.state_file, force=args.force)

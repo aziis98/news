@@ -9,4 +9,5 @@ dependencies = [
     "packaging>=26.0",
     "pydantic",
     "requests>=2.32.5",
+    "PyMuPDF>=1.23.0",
 ]
