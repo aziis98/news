@@ -23,10 +23,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
+import yaml
 from bs4 import BeautifulSoup
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from pydantic import BaseModel, create_model
+
+
+def _format_yaml(data: Any) -> str:
+    """Return a nicely formatted YAML string."""
+    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False).rstrip()
+
 
 # ─── Notify ───────────────────────────────────────────────────────────────────
 
@@ -443,7 +450,10 @@ class News:
             # Restore persisted state into the check instance (class checks only)
             cached_state = s.get("_data", {})
             if cached_state:
-                print(f"  📦 Restored state: {cached_state}")
+                formatted = _format_yaml(cached_state)
+                print("\033[38;2;136;136;136m  📦 Restored state:\033[0m")
+                for line in formatted.splitlines():
+                    print(f"\033[38;2;136;136;136m  ║ {line}\033[0m")
             entry.load_state(cached_state)
 
             try:
@@ -455,6 +465,15 @@ class News:
 
                 if isinstance(n, Notify):
                     print(f"  🔔 {n.title}")
+                    # Print the new cached state as nicely formatted YAML (or JSON fallback)
+                    new_cached = s.get("_data", {})
+                    if new_cached:
+                        formatted = _format_yaml(new_cached)
+                        print("\033[38;2;136;136;136m  📦 New cached state:\033[0m")
+                        for line in formatted.splitlines():
+                            print(f"\033[38;2;136;136;136m  ║ {line}\033[0m")
+                    else:
+                        print("  ✨ No cached state to save.")
                     self._open_github_issue(n)
                 elif n not in (None, False):
                     print(f"  ⚠  unexpected return value: {n!r}", file=sys.stderr)
