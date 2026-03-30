@@ -472,8 +472,6 @@ class News:
                         print("\033[38;2;136;136;136m  📦 New cached state:\033[0m")
                         for line in formatted.splitlines():
                             print(f"\033[38;2;136;136;136m  ║ {line}\033[0m")
-                    else:
-                        print("  ✨ No cached state to save.")
                     self._open_github_issue(n)
                 elif n not in (None, False):
                     print(f"  ⚠  unexpected return value: {n!r}", file=sys.stderr)
