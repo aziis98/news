@@ -7,7 +7,7 @@ on:
 
 jobs:
     notify:
-        name: Run checks
+        name: Update News
         runs-on: ubuntu-latest
         permissions:
             issues: write
@@ -26,9 +26,9 @@ jobs:
             - name: Install uv
               uses: astral-sh/setup-uv@v5
 
-            - name: Run checks
+            - name: Update News
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
                   FORCE_RECHECK: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-              run: uv run sites.py
+              run: source .venv/bin/activate && python sites.py
