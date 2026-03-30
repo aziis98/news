@@ -124,6 +124,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--force",
         action="store_true",
+        default=None,
         help="Ignore timer cooldown and run all checks immediately",
     )
     parser.add_argument(
