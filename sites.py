@@ -10,6 +10,9 @@ Usage:
     uv run sites.py
 """
 
+import re
+from datetime import datetime
+
 from pydantic import BaseModel
 
 from fetch import News, Notify, fetch, pdf_to_text, semver, text_diff
@@ -45,8 +48,13 @@ class IstGeomExercises:
             diff_md = text_diff(self.prev_text, text, context=3)
             self.prev_text = text
             body = f"New version available at {self.url}\n\n{diff_md}"
+
+            now = datetime.now()
+            # Format: 2026/4/8 17:40
+            timestamp = f"{now.year}/{now.month}/{now.day} {now.hour:02d}:{now.minute:02d}"
+
             return Notify(
-                title="📄 Esercizi Istituzioni di Geometria updated",
+                title=f"📄 Esercizi Istituzioni di Geometria (update del {timestamp})",
                 body=body,
             )
         self.prev_text = text
