@@ -11,11 +11,10 @@ Usage:
 """
 
 import re
-from datetime import datetime
 
 from pydantic import BaseModel
 
-from fetch import News, Notify, fetch, pdf_to_text, semver, text_diff
+from fetch import News, Notify, blob_hash, fetch, pdf_to_text, semver, text_diff
 
 news = News()
 
@@ -49,12 +48,12 @@ class IstGeomExercises:
             self.prev_text = text
             body = f"New version available at {self.url}\n\n{diff_md}"
 
-            now = datetime.now()
-            # Format: 2026/4/8 17:40
-            timestamp = f"{now.year}/{now.month}/{now.day} {now.hour:02d}:{now.minute:02d}"
+            # Use a stable title based on the updated content.
+            # (Using text makes the hash independent of PDF metadata such as timestamps.)
+            h = blob_hash(text)
 
             return Notify(
-                title=f"📄 Esercizi Istituzioni di Geometria (update del {timestamp})",
+                title=f"📄 Esercizi Istituzioni di Geometria (hash {h})",
                 body=body,
             )
         self.prev_text = text
