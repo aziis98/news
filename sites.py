@@ -50,7 +50,7 @@ class IstGeomExercises:
 
             # Use a stable title based on the updated content.
             # (Using text makes the hash independent of PDF metadata such as timestamps.)
-            h = blob_hash(text)
+            h = str(blob_hash(text))[:8]
 
             return Notify(
                 title=f"📄 Esercizi Istituzioni di Geometria (hash {h})",
