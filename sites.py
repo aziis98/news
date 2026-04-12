@@ -23,15 +23,15 @@ class GnomePackage(BaseModel):
     pkgver: str
 
 
-@news.check(every="3h")
-def when_gnome_50():
-    response = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
-    pkg = GnomePackage.model_validate(response.__dict__)
-    if semver.matches(pkg.pkgver, ">=50"):
-        return Notify(
-            title=f"🎉 GNOME {pkg.pkgver} has landed in Arch [extra]",
-            body=f"Run `sudo pacman -Syu` to upgrade.",
-        )
+# @news.check(every="3h")
+# def when_gnome_50():
+#     response = fetch("https://archlinux.org/packages/extra/x86_64/gnome-shell/json/").json()
+#     pkg = GnomePackage.model_validate(response.__dict__)
+#     if semver.matches(pkg.pkgver, ">=50"):
+#         return Notify(
+#             title=f"🎉 GNOME {pkg.pkgver} has landed in Arch [extra]",
+#             body=f"Run `sudo pacman -Syu` to upgrade.",
+#         )
 
 
 @news.check(every="15m")
