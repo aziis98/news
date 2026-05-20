@@ -1,8 +1,3 @@
-#!/usr/bin/env -S uv run
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["requests", "packaging", "pydantic", "beautifulsoup4", "PyMuPDF"]
-# ///
 """
 sites.py — check definitions and runner
 
@@ -10,7 +5,10 @@ Usage:
     uv run sites.py
 """
 
+import json
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -122,6 +120,100 @@ class ParameterGolfLeaderboard:
 
         self.prev_entries = entries
         return notification
+
+
+@news.check(every="1d")
+class OpenVINODoc:
+    """Monitor the OPENVINO.md file in the llama.cpp repo for changes.
+
+    This fetches the raw GitHub file and generates a unified diff when the
+    content changes. Notifications are emitted only when the check runs at
+    08:00 local time to satisfy the "once a day at 8am" requirement.
+    """
+
+    url = "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/docs/backend/OPENVINO.md"
+
+    prev_text: str | None = None
+
+    def check(self):
+        now = datetime.now(ZoneInfo("Europe/Rome"))
+        # Only notify when run at 08:00 Rome local time.
+        if now.hour != 8:
+            return None
+
+        resp = fetch(self.url).text()
+        text = resp
+        if self.prev_text is not None and text != self.prev_text:
+            diff_md = text_diff(self.prev_text, text, context=3)
+            self.prev_text = text
+            body = f"New version available at {self.url}\n\n{diff_md}"
+
+            h = str(blob_hash(text))[:8]
+
+            return Notify(
+                title=f"📄 llama.cpp OPENVINO.md updated (hash {h})",
+                body=body,
+            )
+        self.prev_text = text
+
+
+@news.check(every="6h")
+class AntigravityChecker:
+    """Monitor the AUR `antigravity` package and notify on new major/minor versions.
+
+    Uses the AUR RPC endpoint and persists `prev_version`. Notifies when the
+    major.minor tuple increases (e.g. 1.23.x -> 1.24.x or 2.x).
+    """
+
+    pkg: str = "antigravity"
+    prev_version: str | None = None
+
+    aur_rpc: str = "https://aur.archlinux.org/rpc/?v=5&type=info&arg={}"
+
+    def _major_minor(self, v: str | None) -> tuple[int, int] | None:
+        if not v:
+            return None
+        m = re.search(r"(\d+)\.(\d+)", v)
+        if not m:
+            return None
+        return int(m.group(1)), int(m.group(2))
+
+    def check(self):
+        try:
+            text = fetch(self.aur_rpc.format(self.pkg)).text()
+            data = json.loads(text)
+        except Exception:
+            return None
+
+        results = data.get("results") or {}
+        version = None
+        if isinstance(results, dict):
+            version = results.get("Version") or results.get("version")
+        elif isinstance(results, list) and results:
+            first = results[0]
+            if isinstance(first, dict):
+                version = first.get("Version") or first.get("version")
+
+        if not version:
+            return None
+
+        new_mm = self._major_minor(version)
+        old_mm = self._major_minor(self.prev_version)
+
+        # Persist the latest seen version
+        self.prev_version = version
+
+        # If we have no previous value, just store and don't notify
+        if old_mm is None:
+            return None
+
+        # Only notify on a larger major/minor tuple
+        if new_mm and new_mm > old_mm:
+            body = f"AUR package {self.pkg} updated: {version}\nhttps://aur.archlinux.org/packages/{self.pkg}"
+            h = str(blob_hash(version))[:8]
+            return Notify(title=f"📦 {self.pkg} updated to {version} (hash {h})", body=body)
+
+        return None
 
 
 if __name__ == "__main__":
