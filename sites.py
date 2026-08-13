@@ -134,13 +134,13 @@ class OpenVINODoc:
 
 @news.check(every="6h")
 class AntigravityChecker:
-    """Monitor the AUR `antigravity` package and notify on new major/minor versions.
+    """Monitor the AUR `antigravity-cli` package and notify on new major/minor versions.
 
     Uses the AUR RPC endpoint and persists `prev_version`. Notifies when the
     major.minor tuple increases (e.g. 1.23.x -> 1.24.x or 2.x).
     """
 
-    pkg: str = "antigravity"
+    pkg: str = "antigravity-cli"
     prev_version: str | None = None
 
     aur_rpc: str = "https://aur.archlinux.org/rpc/?v=5&type=info&arg={}"
