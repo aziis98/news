@@ -32,31 +32,6 @@ class GnomePackage(BaseModel):
 #         )
 
 
-@news.check(every="15m")
-class IstGeomExercises:
-    url = "https://people.dm.unipi.it/martelli/didattica/matematica/2026/Esercizi_istituzioni_2026.pdf"
-
-    prev_text: str | None = None
-
-    def check(self):
-        pdf = fetch(self.url).binary()
-        text = pdf_to_text(pdf)
-        if self.prev_text is not None and text != self.prev_text:
-            diff_md = text_diff(self.prev_text, text, context=3)
-            self.prev_text = text
-            body = f"New version available at {self.url}\n\n{diff_md}"
-
-            # Use a stable title based on the updated content.
-            # (Using text makes the hash independent of PDF metadata such as timestamps.)
-            h = str(blob_hash(text))[:8]
-
-            return Notify(
-                title=f"📄 Esercizi Istituzioni di Geometria (hash {h})",
-                body=body,
-            )
-        self.prev_text = text
-
-
 @news.check(every="1h")
 class ParameterGolfLeaderboard:
     """Monitor the OpenAI Parameter Golf leaderboard for new entries."""
