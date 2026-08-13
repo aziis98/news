@@ -191,33 +191,6 @@ class AntigravityChecker:
         return None
 
 
-@news.check(every="6h")
-class LauzHackChecker:
-    """Monitor https://lauzhack.com/ for content updates."""
-
-    url = "https://lauzhack.com/"
-    prev_text: str | None = None
-
-    def check(self):
-        soup = fetch(self.url).html().document
-        for element in soup(["script", "style"]):
-            element.decompose()
-        text = soup.get_text(separator="\n", strip=True)
-
-        if self.prev_text is not None and text != self.prev_text:
-            diff_md = text_diff(self.prev_text, text, context=3)
-            self.prev_text = text
-            body = f"New version available at {self.url}\n\n{diff_md}"
-
-            h = str(blob_hash(text))[:8]
-
-            return Notify(
-                title=f"🚀 LauzHack website updated (hash {h})",
-                body=body,
-            )
-        self.prev_text = text
-
-
 if __name__ == "__main__":
     import argparse
 
