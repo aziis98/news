@@ -34,4 +34,5 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
                   FORCE_RECHECK: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+                  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
               run: source .venv/bin/activate && python sites.py
