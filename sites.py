@@ -6,7 +6,9 @@ Usage:
 """
 
 import json
+import os
 import re
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -189,6 +191,61 @@ class AntigravityChecker:
             return Notify(title=f"📦 {self.pkg} updated to {version} (hash {h})", body=body)
 
         return None
+
+
+def fetch_gemini_models() -> list[str]:
+    """Fetch available model IDs from Gemini OpenAI-compatible /models endpoint.
+
+    Returns an empty list if GEMINI_API_KEY is not configured or on request error.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return []
+    try:
+        resp = fetch(
+            "https://generativelanguage.googleapis.com/v1beta/openai/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        data = json.loads(resp.text())
+        return sorted([m["id"] for m in data.get("data", []) if "id" in m])
+    except Exception as exc:
+        print(f"⚠️  Failed to fetch Gemini models: {exc}", file=sys.stderr)
+        return []
+
+
+@news.check(every="6h")
+class GeminiModelsChecker:
+    """Monitor Gemini OpenAI-compatible /models endpoint for newly added models."""
+
+    prev_models: list[str] = []
+
+    def check(self):
+        models = fetch_gemini_models()
+        if not models:
+            return None
+
+        # If baseline is empty (e.g. first run), initialize without notifying
+        if not self.prev_models:
+            self.prev_models = models
+            return None
+
+        prev_set = set(self.prev_models)
+        new_models = [m for m in models if m not in prev_set]
+
+        notification = None
+        if new_models:
+            diff_block = "```diff\n" + "\n".join(f"+ {m}" for m in new_models) + "\n```"
+            body = (
+                f"New Gemini model(s) detected:\n\n{diff_block}\n\n"
+                f"Total models available: {len(models)}"
+            )
+            notification = Notify(
+                title=f"✨ {len(new_models)} new Gemini model(s) available",
+                body=body,
+            )
+
+        self.prev_models = models
+        return notification
 
 
 if __name__ == "__main__":
