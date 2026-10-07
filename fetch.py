@@ -327,7 +327,7 @@ class News:
     def __init__(self) -> None:
         self.registry: list[_CheckEntry] = []
 
-    def check(self, every: str, *, id: str | None = None) -> Callable:
+    def check(self, every: str, *, id: str | None = None, enabled: bool = True) -> Callable:
         """Decorator for function and class checks.
 
         Usage:
@@ -343,6 +343,9 @@ class News:
                 def check(self):
                     return Notify(...) or None
         """
+        if not enabled:
+            return lambda target: target
+
         interval = _parse_interval(every)
 
         def decorator(target: type | Callable) -> type | Callable:
