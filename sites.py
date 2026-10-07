@@ -239,8 +239,19 @@ class GeminiModelsChecker:
                 f"New Gemini model(s) detected:\n\n{diff_block}\n\n"
                 f"Total models available: {len(models)}"
             )
+            names = [m.removeprefix("models/") for m in new_models]
+            if len(names) <= 3:
+                title_names = ", ".join(names)
+            else:
+                title_names = f"{', '.join(names[:3])} (+{len(names) - 3} more)"
+
+            title = (
+                f"New Gemini model: {title_names}"
+                if len(names) == 1
+                else f"New Gemini models: {title_names}"
+            )
             notification = Notify(
-                title=f"✨ {len(new_models)} new Gemini model(s) available",
+                title=title,
                 body=body,
             )
 
