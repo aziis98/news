@@ -200,6 +200,7 @@ def fetch_gemini_models() -> list[str]:
     """
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
+        print("  ⚠  GEMINI_API_KEY not set.", file=sys.stderr)
         return []
     try:
         resp = fetch(
@@ -221,6 +222,7 @@ class GeminiModelsChecker:
 
     def check(self):
         models = fetch_gemini_models()
+        print(f"  Fetched {len(models)} models.")
         if not models:
             return None
 
