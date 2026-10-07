@@ -213,7 +213,7 @@ def fetch_gemini_models() -> list[str]:
         return []
 
 
-@news.check(every="6h")
+@news.check(every="15m")
 class GeminiModelsChecker:
     """Monitor Gemini OpenAI-compatible /models endpoint for newly added models."""
 
