@@ -132,7 +132,7 @@ class OpenVINODoc:
         self.prev_text = text
 
 
-@news.check(every="6h")
+@news.check(every="6h", enabled=False)
 class AntigravityChecker:
     """Monitor the AUR `antigravity-cli` package and notify on new major/minor versions.
 
