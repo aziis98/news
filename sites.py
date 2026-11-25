@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -259,6 +260,184 @@ class GeminiModelsChecker:
 
         self.prev_models = models
         return notification
+
+
+def _github_api_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _fetch_preprints_tree_sha(repo: str, branch: str, subpath: str) -> str | None:
+    """Fetch the Git tree SHA for *subpath* on *branch* in *repo*."""
+    try:
+        resp = fetch(
+            f"https://api.github.com/repos/{repo}/git/trees/{branch}",
+            headers=_github_api_headers(),
+        )
+        data = json.loads(resp.text())
+        for entry in data.get("tree", []):
+            if entry.get("path") == subpath and entry.get("type") == "tree":
+                return entry.get("sha")
+        print(f"⚠️  Subpath {subpath!r} not found in {repo}@{branch}.", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"⚠️  Failed to fetch {repo}@{branch} root tree: {exc}", file=sys.stderr)
+        return None
+
+
+def _is_preprint_pdf(path: str, entry_type: str | None) -> bool:
+    return entry_type == "blob" and path.lower().endswith(".pdf") and "build" not in path.split("/")
+
+
+def _fetch_preprints_pdfs(repo: str, tree_sha: str, prev_pdfs: list[str]) -> list[str] | None:
+    """List preprint PDF paths under *tree_sha*, falling back to shallow dir trees if truncated."""
+    headers = _github_api_headers()
+    try:
+        resp = fetch(
+            f"https://api.github.com/repos/{repo}/git/trees/{tree_sha}?recursive=1",
+            headers=headers,
+        )
+        data = json.loads(resp.text())
+        if not data.get("truncated"):
+            return sorted(
+                entry["path"]
+                for entry in data.get("tree", [])
+                if _is_preprint_pdf(entry.get("path", ""), entry.get("type"))
+            )
+
+        if not prev_pdfs:
+            print(
+                f"⚠️  Git tree {tree_sha} truncated on empty baseline; skipping.",
+                file=sys.stderr,
+            )
+            return None
+
+        top_resp = fetch(
+            f"https://api.github.com/repos/{repo}/git/trees/{tree_sha}",
+            headers=headers,
+        )
+        top_tree = json.loads(top_resp.text()).get("tree", [])
+
+        root_pdfs = [
+            e["path"]
+            for e in top_tree
+            if _is_preprint_pdf(e.get("path", ""), e.get("type"))
+        ]
+        current_dirs = {
+            e["path"]: e["sha"] for e in top_tree if e.get("type") == "tree" and "path" in e and "sha" in e
+        }
+        known_dirs = {p.split("/")[0] for p in prev_pdfs if "/" in p}
+        kept_pdfs = [p for p in prev_pdfs if "/" in p and p.split("/")[0] in current_dirs]
+
+        added_pdfs: list[str] = []
+        for dir_name, dir_sha in current_dirs.items():
+            if dir_name in known_dirs:
+                continue
+            dir_resp = fetch(
+                f"https://api.github.com/repos/{repo}/git/trees/{dir_sha}",
+                headers=headers,
+            )
+            for child in json.loads(dir_resp.text()).get("tree", []):
+                child_path = child.get("path", "")
+                if child.get("type") == "blob" and child_path.lower().endswith(".pdf"):
+                    added_pdfs.append(f"{dir_name}/{child_path}")
+
+        return sorted(set(kept_pdfs) | set(root_pdfs) | set(added_pdfs))
+    except Exception as exc:
+        print(f"⚠️  Failed to fetch preprints tree {tree_sha}: {exc}", file=sys.stderr)
+        return None
+
+
+def _format_preprints_title(labels: list[str], max_len: int = 250) -> str:
+    """Build a GitHub-safe issue title containing new preprint names."""
+    if len(labels) == 1:
+        title = f"New OpenAI math preprint: {labels[0]}"
+        return title if len(title) <= max_len else title[: max_len - 3] + "..."
+
+    prefix = "New OpenAI math preprints: "
+    chosen: list[str] = []
+    for idx, label in enumerate(labels[:3]):
+        rem = len(labels) - (idx + 1)
+        suffix = f" (+{rem} more)" if rem > 0 else ""
+        if not chosen:
+            avail = max_len - len(prefix) - len(suffix)
+            chosen.append(label if len(label) <= avail else label[: max(0, avail - 3)] + "...")
+        else:
+            candidate = ", ".join([*chosen, label])
+            if len(prefix) + len(candidate) + len(suffix) <= max_len:
+                chosen.append(label)
+            else:
+                break
+
+    rem = len(labels) - len(chosen)
+    suffix = f" (+{rem} more)" if rem > 0 else ""
+    return f"{prefix}{', '.join(chosen)}{suffix}"
+
+
+@news.check(every="1h")
+class OpenAIMathPreprints:
+    """Monitor openai/math `preprints/` for newly added PDF files."""
+
+    repo = "openai/math"
+    branch = "main"
+    subpath = "preprints"
+
+    prev_tree_sha: str | None = None
+    prev_pdfs: list[str] = []
+
+    def check(self):
+        tree_sha = _fetch_preprints_tree_sha(self.repo, self.branch, self.subpath)
+        if not tree_sha:
+            return None
+
+        if self.prev_tree_sha == tree_sha and self.prev_pdfs:
+            print(f"  Preprints tree unchanged ({len(self.prev_pdfs)} PDFs).")
+            return None
+
+        pdfs = _fetch_preprints_pdfs(self.repo, tree_sha, self.prev_pdfs)
+        if pdfs is None:
+            return None
+
+        print(f"  Fetched {len(pdfs)} preprint PDFs.")
+
+        # Initialize baseline without notifying on first run
+        if not self.prev_pdfs:
+            self.prev_tree_sha = tree_sha
+            self.prev_pdfs = pdfs
+            return None
+
+        prev_set = set(self.prev_pdfs)
+        new_pdfs = [p for p in pdfs if p not in prev_set]
+
+        self.prev_tree_sha = tree_sha
+        self.prev_pdfs = pdfs
+
+        if not new_pdfs:
+            return None
+
+        labels = [p.split("/")[0] if "/" in p else p for p in new_pdfs]
+        title = _format_preprints_title(labels)
+
+        lines = []
+        for p in new_pdfs[:100]:
+            url = f"https://github.com/{self.repo}/blob/{self.branch}/{self.subpath}/{quote(p, safe='/')}"
+            lines.append(f"- [`{p}`]({url})")
+        if len(new_pdfs) > 100:
+            lines.append(f"- ... and {len(new_pdfs) - 100} more")
+
+        body = (
+            f"New preprint PDF(s) detected:\n\n"
+            + "\n".join(lines)
+            + f"\n\nTotal preprint PDFs: {len(pdfs)}\n"
+            + f"Browse all: https://github.com/{self.repo}/tree/{self.branch}/{self.subpath}"
+        )
+        return Notify(title=title, body=body)
 
 
 if __name__ == "__main__":
